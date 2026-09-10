@@ -575,9 +575,13 @@ Signal an error when the request or response is invalid."
           (insert "\n")
 
           (ctftime--insert-detail
-           "URL:"
-           (ctftime--url event))
-
+           "CTFtime:"
+           (alist-get 'ctftime_url event))
+          
+          (ctftime--insert-detail
+           "Official:"
+           (alist-get 'url event))
+          
           (let ((description
                  (alist-get 'description event)))
             (when (and (stringp description)
