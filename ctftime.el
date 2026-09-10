@@ -93,6 +93,9 @@
 (defvar ctftime--cache-time nil
   "Time when the CTFtime cache was updated.")
 
+(defvar ctftime--image-files nil
+  "Temporary files containing downloaded CTF logos.")
+
 (defvar-local ctftime--events nil
   "Events currently displayed in the current buffer.")
 
@@ -666,8 +669,8 @@ Signal an error when the request or response is invalid."
 
     (require 'org)
     (let ((buffer (generate-new-buffer
-            (format "*CTFtime Org (%d events)*"
-             (length events)))))
+                   (format "*CTFtime Org (%d events)*"
+                           (length events)))))
 
       (with-current-buffer buffer
         (org-mode)
@@ -743,6 +746,71 @@ Signal an error when the request or response is invalid."
 
    (format "%s\n" (or value "-"))))
 
+(defun ctftime--insert-logo-async (url buffer)
+  "Insert the CTF logo from URL asynchronously into BUFFER."
+  (when (and (stringp url)
+             (not (string-empty-p url)))
+
+    (let ((marker (copy-marker (point)))
+          (placeholder "[Loading logo...]\n\n"))
+      (insert placeholder)
+
+      (condition-case nil
+          (url-retrieve
+           url
+           (lambda (status)
+             (let ((image-data nil))
+               (unless (plist-get status :error)
+                 (goto-char (point-min))
+
+                 (when (re-search-forward "\r?\n\r?\n" nil t)
+                   (setq image-data
+                         (buffer-substring-no-properties
+                          (point)
+                          (point-max)))))
+
+               (kill-buffer (current-buffer))
+               (when (and image-data
+                          (buffer-live-p buffer)
+                          (marker-position marker))
+
+                 (with-current-buffer buffer
+                   (let ((inhibit-read-only t))
+
+                     (goto-char (marker-position marker))
+
+                     (delete-region
+                      (point)
+                      (+ (point)
+                         (length placeholder)))
+
+                     (condition-case nil
+                         (let ((image
+                                (create-image
+                                 image-data
+                                 nil
+                                 t
+                                 :max-width 500
+                                 :max-height 300)))
+
+                           (when image
+                             (insert-image image)
+                             (insert "\n\n")))
+
+                       (error nil))
+
+                     (set-marker marker nil))))))
+
+           nil
+           t)
+
+        (error
+         (delete-region
+          (marker-position marker)
+          (+ (marker-position marker)
+             (length placeholder)))
+         (set-marker marker nil))))))
+
 (defun ctftime-show-details ()
   "Show details for the event at point."
   (interactive)
@@ -763,6 +831,10 @@ Signal an error when the request or response is invalid."
                 'description
                 event)))
           (erase-buffer)
+          
+          (when-let ((logo (alist-get 'logo event)))
+            (ctftime--insert-logo-async logo buffer))
+          
           (setq ctftime--details-url
                 (ctftime--url event))
 
@@ -803,12 +875,12 @@ Signal an error when the request or response is invalid."
           (ctftime--insert-detail
            "CTFtime:"
            (alist-get 'ctftime_url
-            event))
+                      event))
 
           (ctftime--insert-detail
            "Official:"
            (alist-get 'url
-            event))
+                      event))
 
           (when (and
                  (stringp description)
