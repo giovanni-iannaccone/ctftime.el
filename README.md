@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="images/screenshot.png" alt="preview">
+</p>
+
 # 🏴‍☠️ CTFtime for Emacs
 
-A small Emacs plugin for browsing [CTFtime](https://ctftime.org/) events without leaving Emacs. The goal is simple: have a quick overview of upcoming CTFs, search through them, filter the list and open an event directly in the browser when needed.
+A small Emacs plugin for browsing [CTFtime](https://ctftime.org/) events without leaving Emacs. It provides a quick overview of upcoming CTFs, with support for searching, filtering, selecting, and viewing event details, while keeping the option to open an event directly in your browser when needed.
 
 ## ⚔️ Features
 
@@ -118,6 +122,14 @@ with the Jeopardy format filter and Online filter enabled will only show events 
 - contain both pwn and web
 - use the Jeopardy format
 - are online
+
+## 😒 Testing
+The test suite uses Emacs' built-in ERT (Emacs Lisp Regression Testing). Tests are located in `test/ctftime-tests.el`. When adding new functionality or fixing a bug, add a corresponding ert-deftest to this file.
+
+To run the complete test suite:
+```
+M-x ert RET t RET
+```
 
 ## ⚖️ License
 
