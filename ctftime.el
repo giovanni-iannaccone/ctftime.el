@@ -351,11 +351,31 @@ Signal an error when the request or response is invalid."
 
     'ctftime-later-face))
 
+(defun ctftime--match-term-p (term text)
+  "Return non-nil when TERM matches TEXT."
+  (let* ((negated (string-prefix-p "!" term))
+         (term (if negated
+                   (substring term 1)
+                 term))
+         (regexp (and (>= (length term) 2)
+                      (string-prefix-p "/" term)
+                      (string-suffix-p "/" term)))
+         (pattern (if regexp
+                      (substring term 1 -1)
+                    (regexp-quote term)))
+         match)
+    (condition-case nil
+        (setq match (string-match-p pattern text))
+      (invalid-regexp
+       (setq match nil)))
+    (if negated
+        (not match)
+      match)))
+
 (defun ctftime--text-match-p (event)
   "Return non-nil when EVENT matches the free-text filter."
   (if (string-empty-p (or ctftime--filter ""))
       t
-
     (let ((text
            (downcase
             (format "%s %s %s %s"
@@ -363,11 +383,19 @@ Signal an error when the request or response is invalid."
                     (ctftime--location event)
                     (ctftime--format event)
                     (or (alist-get 'description event)
-                        "")))))
+                        ""))))
+          (query (downcase (string-trim ctftime--filter))))
 
-      (string-match-p
-       (regexp-quote (downcase ctftime--filter))
-       text))))
+      (if (string-match-p " & " query)
+          (cl-every
+           (lambda (term)
+             (ctftime--match-term-p term text))
+           (split-string query " & " t))
+
+        (cl-some
+         (lambda (term)
+           (ctftime--match-term-p term text))
+         (split-string query "[ \t]+" t))))))
 
 (defun ctftime--format-match-p (event)
   "Return non-nil when EVENT matches the format filter."
@@ -397,15 +425,61 @@ Signal an error when the request or response is invalid."
      (< (ctftime--timestamp (alist-get 'start a))
         (ctftime--timestamp (alist-get 'start b))))))
 
+(defvar ctftime--filter-buffer nil)
+
+(defun ctftime--live-filter-update (beg end len)
+  "Update CTFtime results when the minibuffer contents change."
+  (ignore beg end len)
+  (let ((filter (minibuffer-contents-no-properties))
+        (buffer ctftime--filter-buffer))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (setq ctftime--filter filter)
+        (ctftime--render))
+      (when-let ((window (get-buffer-window buffer)))
+        (force-window-update window)))))
+
 (defun ctftime-filter ()
-  "Set the free-text filter."
+  "Set the free-text filter with live updates."
   (interactive)
 
-  (setq ctftime--filter
-        (read-string "Search CTFs: "
-                     ctftime--filter))
+  (let ((ctftime--filter-buffer (current-buffer)))
+    (minibuffer-with-setup-hook
+        (lambda ()
+          (add-hook 'after-change-functions
+                    #'ctftime--live-filter-update
+                    nil
+                    t))
+      (setq ctftime--filter
+            (read-string "Search CTFs: "
+                         ctftime--filter)))))
 
-  (ctftime--render))
+(defun ctftime--live-filter-update (beg end len)
+  "Update CTFtime results when the minibuffer contents change."
+  (ignore beg end len)
+  (let ((filter (minibuffer-contents-no-properties))
+        (buffer ctftime--filter-buffer))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (setq ctftime--filter filter)
+        (ctftime--render))
+      (when-let ((window (get-buffer-window buffer)))
+        (force-window-update window)))))
+
+(defun ctftime-filter ()
+  "Set the free-text filter with live updates."
+  (interactive)
+
+  (let ((ctftime--filter-buffer (current-buffer)))
+    (minibuffer-with-setup-hook
+        (lambda ()
+          (add-hook 'after-change-functions
+                    #'ctftime--live-filter-update
+                    nil
+                    t))
+      (setq ctftime--filter
+            (read-string "Search CTFs: "
+                         ctftime--filter)))))
 
 (defun ctftime-filter-format ()
   "Set the event format filter."
@@ -415,11 +489,9 @@ Signal an error when the request or response is invalid."
           (delete-dups
            (mapcar #'ctftime--format
                    (ctftime--events))))
-
          (choice
           (completing-read
-           "Format: "
-           formats
+           "Format: " formats
            nil
            t
            nil
@@ -429,7 +501,6 @@ Signal an error when the request or response is invalid."
     (setq ctftime--format-filter
           (unless (string-empty-p choice)
             choice))
-
     (ctftime--render)))
 
 (defun ctftime-toggle-online ()
@@ -731,7 +802,7 @@ Signal an error when the request or response is invalid."
 (defun ctftime-details-open ()
   "Open the current event in a browser."
   (interactive)
-
+  
   (if ctftime--details-url
       (browse-url ctftime--details-url)
     (user-error "No event URL available")))
@@ -739,11 +810,9 @@ Signal an error when the request or response is invalid."
 (defun ctftime--insert-detail (label value)
   "Insert a detail with LABEL and VALUE."
   (insert
-
    (propertize
     (format "%-12s" label)
     'face 'font-lock-keyword-face)
-
    (format "%s\n" (or value "-"))))
 
 (defun ctftime--insert-logo-async (url buffer)
@@ -776,7 +845,6 @@ Signal an error when the request or response is invalid."
 
                  (with-current-buffer buffer
                    (let ((inhibit-read-only t))
-
                      (goto-char (marker-position marker))
 
                      (delete-region
@@ -792,15 +860,11 @@ Signal an error when the request or response is invalid."
                                  t
                                  :max-width 500
                                  :max-height 300)))
-
                            (when image
                              (insert-image image)
                              (insert "\n\n")))
-
                        (error nil))
-
                      (set-marker marker nil))))))
-
            nil
            t)
 
@@ -816,7 +880,6 @@ Signal an error when the request or response is invalid."
   (interactive)
 
   (let ((event (ctftime--event-at-point)))
-
     (unless event
       (user-error "No event at point"))
 
@@ -882,10 +945,9 @@ Signal an error when the request or response is invalid."
            (alist-get 'url
                       event))
 
-          (when (and
-                 (stringp description)
-                 (not (string-empty-p
-                       description)))
+          (when (and (stringp description)
+                     (not (string-empty-p
+                           description)))
 
             (insert
              "\n"
@@ -921,9 +983,9 @@ Signal an error when the request or response is invalid."
 
   (ctftime-refresh))
 
-(defun ctftime--render ()
+(defun ctftime--render (&optional silent)
   "Render the CTFtime table."
-
+  
   (let ((events
          (ctftime--filtered-events))
         (current-id
@@ -959,12 +1021,13 @@ Signal an error when the request or response is invalid."
               (throw 'found t))
             (forward-line 1))))))
 
-  (message
-   "CTFtime: %d events %s | %d days | %d selected"
-   (length ctftime--events)
-   (ctftime--filter-status)
-   ctftime-days
-   (length ctftime--selected-events)))
+  (unless silent
+    (message
+     "CTFtime: %d events %s | %d days | %d selected"
+     (length ctftime--events)
+     (ctftime--filter-status)
+     ctftime-days
+     (length ctftime--selected-events))))
 
 (define-derived-mode ctftime-mode
   tabulated-list-mode

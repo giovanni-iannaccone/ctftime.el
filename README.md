@@ -66,6 +66,59 @@ The main buffer provides a simple `tabulated-list` interface. Filters can be com
 | `x`     | Export selected events to Org   |
 | `q`     | Quit                            |
 
+## 🔍 Search and filtering
+
+ctftime.el provides a flexible free-text search for CTF events. The search is performed across the event title, location, format, and description. Results are updated as you type, without requiring you to press `RET`.
+
+### Basic search
+Multiple words are treated as an OR query:
+```
+pwn web
+```
+
+This matches events containing either pwn or web. To require multiple terms, use `&`:
+```
+pwn & web
+```
+
+This matches events containing both pwn and web. Terms can also be negated with `!`:
+```
+pwn & !crypto
+```
+
+This matches events containing pwn but not crypto.
+
+### Regular expressions
+
+Regular expressions can be used by surrounding the expression with `/`:
+```
+/pwn.*/
+```
+
+For example:
+```
+/pwn.*/ & /web.*/
+```
+
+matches events whose searchable text contains both a term matching `pwn.*` and a term matching `web.*`. A negated regular expression is also supported:
+```
+!/crypto.*/
+```
+
+Regular expressions use Emacs' built-in regular expression syntax.
+
+### Combining filters
+
+The text search can be combined with the existing format and online filters. For example:
+```
+pwn & web
+```
+
+with the Jeopardy format filter and Online filter enabled will only show events that:
+- contain both pwn and web
+- use the Jeopardy format
+- are online
+
 ## ⚖️ License
 
 This project is licensed under the GPL-3.0 License. See the LICENSE file for details.
