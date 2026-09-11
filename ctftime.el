@@ -96,6 +96,12 @@
 (defvar ctftime--image-files nil
   "Temporary files containing downloaded CTF logos.")
 
+(defvar ctftime--request-in-progress nil
+  "Non-nil while a CTFtime API request is in progress.")
+
+(defvar ctftime--request-buffers nil
+  "Buffers waiting for the current CTFtime API request.")
+
 (defvar-local ctftime--events nil
   "Events currently displayed in the current buffer.")
 
@@ -215,46 +221,99 @@ Use FALLBACK when VALUE is nil or an empty string."
             (truncate (float-time start))
             (truncate (float-time finish)))))
 
-(defun ctftime--request ()
-  "Retrieve events from CTFtime.
+(defun ctftime--parse-response ()
+  "Parse the current CTFtime HTTP response buffer.
+Signal an error when the response is invalid."
+  (let ((status (and (boundp 'url-http-response-status)
+                     url-http-response-status)))
+    (unless (and status
+                 (>= status 200)
+                 (< status 300))
+      (error "CTFtime HTTP error: %s"
+             (or status "unknown"))))
 
-Signal an error when the request or response is invalid."
-  (let ((url-request-extra-headers
-         '(("User-Agent" . "Emacs-CTFtime/1.0")))
-        (buffer nil))
+  (goto-char (point-min))
 
-    (setq buffer
-          (url-retrieve-synchronously
-           (ctftime--api-url)
-           t
-           t
-           20))
+  (unless (re-search-forward "\r?\n\r?\n" nil t)
+    (error "Invalid HTTP response from CTFtime"))
 
-    (unless buffer
-      (error "Unable to retrieve data from CTFtime"))
+  (let ((json-object-type 'alist)
+        (json-array-type 'list)
+        (json-key-type 'symbol))
+    (json-read)))
+
+
+(defun ctftime--request-callback (status)
+  "Handle the asynchronous CTFtime API response.
+STATUS is the status plist passed by `url-retrieve'."
+  (let ((events nil)
+        (error-message nil))
 
     (unwind-protect
-        (with-current-buffer buffer
-          (let ((status (and (boundp 'url-http-response-status)
-                             url-http-response-status)))
-            (unless (and status
-                         (>= status 200)
-                         (< status 300))
-              (error "CTFtime HTTP error: %s"
-                     (or status "unknown"))))
+        (condition-case err
+            (progn
+              (when-let ((error-data (plist-get status :error)))
+                (signal (car error-data)
+                        (cdr error-data)))
 
-          (goto-char (point-min))
+              (setq events
+                    (ctftime--parse-response)))
 
-          (unless (re-search-forward "^$" nil t)
-            (error "Invalid HTTP response from CTFtime"))
+          (error
+           (setq error-message
+                 (error-message-string err))))
+      (setq ctftime--request-in-progress nil)
+      (when (buffer-live-p (current-buffer))
+        (kill-buffer (current-buffer))))
 
-          (let ((json-object-type 'alist)
-                (json-array-type 'list)
-                (json-key-type 'symbol))
-            (json-read)))
+    (if error-message
+        (progn 
+          (message "CTFtime: request failed: %s"
+                   error-message)
 
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+          (dolist (buffer ctftime--request-buffers)
+            (when (buffer-live-p buffer)
+              (with-current-buffer buffer
+                (when (derived-mode-p 'ctftime-mode)
+                  (ctftime--render t)))))
+
+          (setq ctftime--request-buffers nil))
+      (setq ctftime--cache events
+            ctftime--cache-time (current-time))
+
+      (let ((buffers ctftime--request-buffers))
+        (setq ctftime--request-buffers nil)
+
+        (dolist (buffer buffers)
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (when (derived-mode-p 'ctftime-mode)
+                (ctftime--render t))))))
+
+      (message "CTFtime: downloaded %d events"
+               (length events)))))
+
+(defun ctftime--request-async ()
+  "Retrieve CTFtime events asynchronously.
+Return non-nil when a request was started."
+  (unless ctftime--request-in-progress
+    (setq ctftime--request-in-progress t)
+
+    (condition-case err
+        (let ((url-request-extra-headers
+               '(("User-Agent" . "Emacs-CTFtime/1.0"))))
+          (url-retrieve
+           (ctftime--api-url)
+           #'ctftime--request-callback
+           nil
+           t)
+          t)
+
+      (error
+       (setq ctftime--request-in-progress nil)
+       (message "CTFtime: unable to start request: %s"
+                (error-message-string err))
+       nil))))
 
 (defun ctftime--cache-valid-p ()
   "Return non-nil when the CTFtime cache is still valid."
@@ -266,16 +325,9 @@ Signal an error when the request or response is invalid."
           ctftime-cache-duration)))
 
 (defun ctftime--events ()
-  "Return CTFtime events, using the cache when possible."
-  (if (ctftime--cache-valid-p)
-      ctftime--cache
-
-    (message "CTFtime: downloading events...")
-
-    (setq ctftime--cache (ctftime--request)
-          ctftime--cache-time (current-time))
-
-    ctftime--cache))
+  "Return the currently cached CTFtime events.
+Return nil when no cache is available yet."
+  ctftime--cache)
 
 (defun ctftime--title (event)
   "Return the title of EVENT."
@@ -427,18 +479,6 @@ Signal an error when the request or response is invalid."
 
 (defvar ctftime--filter-buffer nil)
 
-(defun ctftime--live-filter-update (beg end len)
-  "Update CTFtime results when the minibuffer contents change."
-  (ignore beg end len)
-  (let ((filter (minibuffer-contents-no-properties))
-        (buffer ctftime--filter-buffer))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (setq ctftime--filter filter)
-        (ctftime--render))
-      (when-let ((window (get-buffer-window buffer)))
-        (force-window-update window)))))
-
 (defun ctftime-filter ()
   "Set the free-text filter with live updates."
   (interactive)
@@ -465,42 +505,30 @@ Signal an error when the request or response is invalid."
         (ctftime--render))
       (when-let ((window (get-buffer-window buffer)))
         (force-window-update window)))))
-
-(defun ctftime-filter ()
-  "Set the free-text filter with live updates."
-  (interactive)
-
-  (let ((ctftime--filter-buffer (current-buffer)))
-    (minibuffer-with-setup-hook
-        (lambda ()
-          (add-hook 'after-change-functions
-                    #'ctftime--live-filter-update
-                    nil
-                    t))
-      (setq ctftime--filter
-            (read-string "Search CTFs: "
-                         ctftime--filter)))))
 
 (defun ctftime-filter-format ()
   "Set the event format filter."
   (interactive)
 
+  (unless ctftime--cache
+    (user-error "CTFtime events are still loading"))
   (let* ((formats
           (delete-dups
            (mapcar #'ctftime--format
-                   (ctftime--events))))
+                   ctftime--cache)))
          (choice
           (completing-read
-           "Format: " formats
+           "Format: "
+           formats
            nil
            t
            nil
            nil
            ctftime--format-filter)))
-
     (setq ctftime--format-filter
           (unless (string-empty-p choice)
             choice))
+
     (ctftime--render)))
 
 (defun ctftime-toggle-online ()
@@ -790,7 +818,6 @@ Signal an error when the request or response is invalid."
 
     (define-key map (kbd "q")
                 #'quit-window)
-
     map)
   "Keymap for `ctftime-details-mode'.")
 
@@ -964,13 +991,25 @@ Signal an error when the request or response is invalid."
       (pop-to-buffer buffer))))
 
 (defun ctftime-refresh ()
-  "Clear the cache and refresh the current CTFtime buffer."
+  "Clear the cache and asynchronously refresh the current CTFtime buffer."
   (interactive)
 
   (setq ctftime--cache nil
         ctftime--cache-time nil)
+  (unless (memq (current-buffer)
+                ctftime--request-buffers)
+    (push (current-buffer)
+          ctftime--request-buffers))
 
-  (ctftime--render))
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert
+     (propertize
+      "Refreshing CTFtime events..."
+      'face 'font-lock-comment-face)
+     "\n"))
+
+  (ctftime--request-async))
 
 (defun ctftime-set-days ()
   "Change the number of days to retrieve."
@@ -984,67 +1023,93 @@ Signal an error when the request or response is invalid."
   (ctftime-refresh))
 
 (defun ctftime--render (&optional silent)
-  "Render the CTFtime table."
-  
-  (let ((events
-         (ctftime--filtered-events))
-        (current-id
-         (tabulated-list-get-id)))
-    (setq ctftime--events events)
+  "Render the CTFtime table.
+Use cached data immediately and refresh stale data asynchronously."
+  (let ((current-id (tabulated-list-get-id))
+        (cache-available (and ctftime--cache
+                              (not (null ctftime--cache))))
+        (cache-valid (ctftime--cache-valid-p)))
+    (unless cache-available
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert
+         (propertize
+          "Loading CTFtime events..."
+          'face 'font-lock-comment-face)
+         "\n"))
+      (unless (memq (current-buffer)
+                    ctftime--request-buffers)
+        (push (current-buffer)
+              ctftime--request-buffers))
 
-    (setq ctftime--selected-events
-          (cl-remove-if-not
-           (lambda (id)
-             (cl-find-if
-              (lambda (event)
-                (equal id
-                       (alist-get 'id event)))
-              (ctftime--events)))
-           ctftime--selected-events))
+      (ctftime--request-async))
+    (when cache-available
+      (let ((events
+             (ctftime--filtered-events)))
+        (setq ctftime--events events)
 
-    (let ((inhibit-read-only t))
-      (erase-buffer)
-      (setq tabulated-list-entries
-            (mapcar
-             #'ctftime--entry
-             events))
-      (tabulated-list-print t)
+        (setq ctftime--selected-events
+              (cl-remove-if-not
+               (lambda (id)
+                 (cl-find-if
+                  (lambda (event)
+                    (equal id
+                           (alist-get 'id event)))
+                  ctftime--events))
+               ctftime--selected-events))
 
-      (when current-id
-        (goto-char (point-min))
+        (let ((inhibit-read-only t))
+          (erase-buffer)
 
-        (catch 'found
-          (while (not (eobp))
-            (when (equal
-                   current-id
-                   (tabulated-list-get-id))
-              (throw 'found t))
-            (forward-line 1))))))
+          (setq tabulated-list-entries
+                (mapcar #'ctftime--entry
+                        events))
 
-  (unless silent
-    (message
-     "CTFtime: %d events %s | %d days | %d selected"
-     (length ctftime--events)
-     (ctftime--filter-status)
-     ctftime-days
-     (length ctftime--selected-events))))
+          (tabulated-list-print t)
+          (when current-id
+            (goto-char (point-min))
+
+            (catch 'found
+              (while (not (eobp))
+                (when (equal
+                       current-id
+                       (tabulated-list-get-id))
+                  (throw 'found t))
+                (forward-line 1))))))
+
+      (unless cache-valid
+        (ctftime--request-async)))
+
+    (unless silent
+      (cond
+       ((not cache-available)
+        (message "CTFtime: loading events..."))
+
+       ((not cache-valid)
+        (message
+         "CTFtime: showing cached data; refreshing..."))
+
+       (t
+        (message
+         "CTFtime: %d events %s | %d days | %d selected"
+         (length ctftime--events)
+         (ctftime--filter-status)
+         ctftime-days
+         (length ctftime--selected-events)))))))
 
 (define-derived-mode ctftime-mode
   tabulated-list-mode
   "CTFtime"
-
   "Major mode for browsing CTFtime events."
 
   (setq
    tabulated-list-format
-
    [("Event" 34 t)
     ("Start" 18 t)
     ("Duration" 10 t)
     ("Format" 18 t)
     ("Location" 24 t)
     ("Weight" 8 t)]
-
    tabulated-list-padding 2)
 
   (define-key  ctftime-mode-map (kbd "RET")
@@ -1093,23 +1158,11 @@ Signal an error when the request or response is invalid."
   (interactive)
 
   (let ((buffer
-         (get-buffer-create
-          "*CTFtime*")))
-    (with-current-buffer buffer 
+         (get-buffer-create "*CTFtime*")))
+    (with-current-buffer buffer
       (ctftime-mode)
-      (condition-case err
-          (ctftime--render)
-        (error
-         (let ((inhibit-read-only t))
-           (erase-buffer)
-           (insert
-            (propertize
-             "CTFtime error\n"
-             'face 'error)
-            "\n"
-            (error-message-string err)
-            "\n\n"
-            "Press `g' to retry.")))))
+      (ctftime--render))
+
     (pop-to-buffer buffer)))
 
 (provide 'ctftime)
