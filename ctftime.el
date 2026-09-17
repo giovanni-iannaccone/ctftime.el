@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Giovanni Francesco Iannaccone
 ;;
 ;; Author: Giovanni Francesco Iannaccone <iannacconegiovanni444@gmail.com>
-;; Mainteiner: Giovanni Francesco Iannaccone <iannacconegiovanni444@gmail.com>
+;; Maintainer: Giovanni Francesco Iannaccone <iannacconegiovanni444@gmail.com>
 ;; Version: 1.0.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: ctf tools games
