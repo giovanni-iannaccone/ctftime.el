@@ -5,6 +5,7 @@
 ;; Author: Giovanni Francesco Iannaccone <iannacconegiovanni444@gmail.com>
 ;; Maintainer: Giovanni Francesco Iannaccone <iannacconegiovanni444@gmail.com>
 ;; Version: 1.0.0
+;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: ctf tools games
 ;; URL: https://github.com/giovanni-iannaccone/ctftime.el
