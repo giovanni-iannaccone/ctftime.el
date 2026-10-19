@@ -126,7 +126,7 @@ with the Jeopardy format filter and Online filter enabled will only show events 
 ## 😒 Testing
 The test suite uses Emacs' built-in ERT (Emacs Lisp Regression Testing). Tests are located in `test/ctftime-tests.el`. When adding new functionality or fixing a bug, add a corresponding ert-deftest to this file.
 
-To run the complete test suite:
+To run the complete test suite open the file in `test/ctftime-tests.el`, eval the buffer and then:
 ```
 M-x ert RET t RET
 ```

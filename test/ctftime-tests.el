@@ -807,13 +807,14 @@
           (should refreshed))))))
 
 (ert-deftest ctftime-test-request-callback-success ()
-  (let ((response-buffer
-         (generate-new-buffer " *ctftime-test-response*"))
-        (display-buffer
-         (generate-new-buffer " *ctftime-test-display*"))
-        (ctftime--request-in-progress t)
-        rendered)
-
+  (let* ((response-buffer
+          (generate-new-buffer " *ctftime-test-response*"))
+         (display-buffer
+          (generate-new-buffer " *ctftime-test-display*"))
+         (ctftime--request-buffer response-buffer)
+         (ctftime--request-in-progress t)
+         rendered)
+    
     (unwind-protect
         (progn
           (with-current-buffer display-buffer
@@ -863,7 +864,7 @@
 
 (ert-deftest ctftime-test-main-command ()
   (let ((buffer-name "*CTFtime*"))
-    (when-let ((buffer (get-buffer buffer-name)))
+    (when-let* ((buffer (get-buffer buffer-name)))
       (kill-buffer buffer))
 
     (cl-letf (((symbol-function 'ctftime--render)
@@ -877,7 +878,7 @@
       (with-current-buffer buffer-name
         (should (derived-mode-p 'ctftime-mode))))
 
-    (when-let ((buffer (get-buffer buffer-name)))
+    (when-let* ((buffer (get-buffer buffer-name)))
       (kill-buffer buffer))))
 
 (provide 'ctftime-test)
