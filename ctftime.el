@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Giovanni Francesco Iannaccone
 ;;
 ;; Author: Giovanni Francesco Iannaccone <iannacconegiovanni444@gmail.com>
-;; Maintainer: Giovanni Francesco Iannaccone <iannacconegiovanni444@gmail.com>
+;; Mainteiner: Giovanni Francesco Iannaccone <iannacconegiovanni444@gmail.com>
 ;; Version: 1.0.0
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Package-Requires: ((emacs "27.1"))
@@ -103,6 +103,17 @@
 (defvar ctftime--request-buffers nil
   "Buffers waiting for the current CTFtime API request.")
 
+(defcustom ctftime-request-timeout 30
+  "Maximum number of seconds to wait for a CTFtime API request."
+  :type 'integer
+  :group 'ctftime)
+
+(defvar ctftime--request-buffer nil
+  "Buffer associated with the current CTFtime API request.")
+
+(defvar ctftime--request-timeout-timer nil
+  "Timer used to abort a stuck CTFtime API request.")
+
 (defvar-local ctftime--events nil
   "Events currently displayed in the current buffer.")
 
@@ -153,7 +164,7 @@ VALUE may be a Unix timestamp or a date string."
   "Return VALUE as a floating-point Unix timestamp.
 
 Return 0 when VALUE is invalid."
-  (if-let ((time (ctftime--time value)))
+  (if-let* ((time (ctftime--time value)))
       (float-time time)
     0))
 
@@ -168,7 +179,7 @@ Use FALLBACK when VALUE is nil or an empty string."
 
 (defun ctftime--format-date (value)
   "Format VALUE as a local date/time."
-  (if-let ((time (ctftime--time value)))
+  (if-let* ((time (ctftime--time value)))
       (format-time-string "%a %d %b %H:%M" time)
     "?"))
 
@@ -243,77 +254,122 @@ Signal an error when the response is invalid."
         (json-key-type 'symbol))
     (json-read)))
 
+(defun ctftime--request-cleanup ()
+  "Clean up the state associated with the current API request."
+  (when (timerp ctftime--request-timeout-timer)
+    (cancel-timer ctftime--request-timeout-timer))
+
+  (setq ctftime--request-timeout-timer nil
+        ctftime--request-in-progress nil
+        ctftime--request-buffer nil))
+
+(defun ctftime--request-timeout ()
+  "Abort a CTFtime API request that has taken too long."
+
+  (when ctftime--request-in-progress
+    (let ((buffer ctftime--request-buffer))
+      (ctftime--request-cleanup)
+
+      (when (buffer-live-p buffer)
+        (when-let* ((process (get-buffer-process buffer)))
+          (delete-process process))
+        (kill-buffer buffer)))
+    (message
+     "CTFtime: request timed out after %d seconds"
+     ctftime-request-timeout)))
 
 (defun ctftime--request-callback (status)
   "Handle the asynchronous CTFtime API response.
+
 STATUS is the status plist passed by `url-retrieve'."
-  (let ((events nil)
-        (error-message nil))
 
-    (unwind-protect
-        (condition-case err
-            (progn
-              (when-let ((error-data (plist-get status :error)))
-                (signal (car error-data)
-                        (cdr error-data)))
-
-              (setq events
-                    (ctftime--parse-response)))
-
-          (error
-           (setq error-message
-                 (error-message-string err))))
-      (setq ctftime--request-in-progress nil)
+  (if (not (eq (current-buffer) ctftime--request-buffer))
       (when (buffer-live-p (current-buffer))
-        (kill-buffer (current-buffer))))
+        (kill-buffer (current-buffer)))
 
-    (if error-message
-        (progn 
-          (message "CTFtime: request failed: %s"
-                   error-message)
+    (let ((events nil)
+          (error-message nil)
+          (request-buffer (current-buffer)))
 
-          (dolist (buffer ctftime--request-buffers)
+      (unwind-protect
+          (condition-case err
+              (progn
+                (when-let* ((error-data (plist-get status :error)))
+                  (signal (car error-data)
+                          (cdr error-data)))
+
+                (setq events
+                      (ctftime--parse-response)))
+
+            (error
+             (setq error-message
+                   (error-message-string err))))
+
+        (ctftime--request-cleanup)
+        (when (buffer-live-p request-buffer)
+          (kill-buffer request-buffer)))
+
+      (if error-message
+          (progn
+            (message
+             "CTFtime: request failed: %s"
+             error-message)
+
+            (let ((buffers ctftime--request-buffers))
+
+              (setq ctftime--request-buffers nil)
+
+              (dolist (buffer buffers)
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (when (derived-mode-p 'ctftime-mode)
+                      (ctftime--render t)))))))
+
+        (setq ctftime--cache events
+              ctftime--cache-time (current-time))
+
+        (let ((buffers ctftime--request-buffers))
+          (setq ctftime--request-buffers nil)
+
+          (dolist (buffer buffers)
             (when (buffer-live-p buffer)
               (with-current-buffer buffer
                 (when (derived-mode-p 'ctftime-mode)
-                  (ctftime--render t)))))
+                  (ctftime--render t))))))
 
-          (setq ctftime--request-buffers nil))
-      (setq ctftime--cache events
-            ctftime--cache-time (current-time))
-
-      (let ((buffers ctftime--request-buffers))
-        (setq ctftime--request-buffers nil)
-
-        (dolist (buffer buffers)
-          (when (buffer-live-p buffer)
-            (with-current-buffer buffer
-              (when (derived-mode-p 'ctftime-mode)
-                (ctftime--render t))))))
-
-      (message "CTFtime: downloaded %d events"
-               (length events)))))
+        (message
+         "CTFtime: downloaded %d events"
+         (length events))))))
 
 (defun ctftime--request-async ()
   "Retrieve CTFtime events asynchronously.
+
 Return non-nil when a request was started."
+
   (unless ctftime--request-in-progress
     (setq ctftime--request-in-progress t)
-
     (condition-case err
         (let ((url-request-extra-headers
                '(("User-Agent" . "Emacs-CTFtime/1.0"))))
-          (url-retrieve
-           (ctftime--api-url)
-           #'ctftime--request-callback
-           nil
-           t)
+          (setq ctftime--request-buffer
+                (url-retrieve
+                 (ctftime--api-url)
+                 #'ctftime--request-callback
+                 nil
+                 t))
+
+          (setq ctftime--request-timeout-timer
+                (run-at-time
+                 ctftime-request-timeout
+                 nil
+                 #'ctftime--request-timeout))
           t)
 
-      (error
-       (setq ctftime--request-in-progress nil)
-       (message "CTFtime: unable to start request: %s"
-                (error-message-string err))
+      (error 
+       (ctftime--request-cleanup)
+       (message
+        "CTFtime: unable to start request: %s"
+        (error-message-string err))
        nil))))
 
 (defun ctftime--cache-valid-p ()
@@ -385,8 +441,8 @@ Return nil when no cache is available yet."
 
 (defun ctftime--face-for-event (event)
   "Return the appropriate face for EVENT."
-  (if-let ((start (ctftime--time
-                   (alist-get 'start event))))
+  (if-let* ((start (ctftime--time
+                    (alist-get 'start event))))
       (let ((days (ctftime--days-from-today start)))
         (cond
          ((= days 0)
@@ -504,7 +560,7 @@ Return nil when no cache is available yet."
       (with-current-buffer buffer
         (setq ctftime--filter filter)
         (ctftime--render))
-      (when-let ((window (get-buffer-window buffer)))
+      (when-let* ((window (get-buffer-window buffer)))
         (force-window-update window)))))
 
 (defun ctftime-filter-format ()
@@ -648,7 +704,7 @@ Return nil when no cache is available yet."
 
 (defun ctftime--event-at-point ()
   "Return the event represented by the current table row."
-  (when-let ((id (tabulated-list-get-id)))
+  (when-let* ((id (tabulated-list-get-id)))
 
     (cl-find-if
      (lambda (event)
@@ -657,7 +713,7 @@ Return nil when no cache is available yet."
 
 (defun ctftime--org-timestamp (value)
   "Convert CTFtime VALUE into an Org timestamp."
-  (when-let ((time (ctftime--time value)))
+  (when-let* ((time (ctftime--time value)))
     (format-time-string
      "<%Y-%m-%d %a %H:%M>"
      time)))
@@ -923,7 +979,7 @@ Return nil when no cache is available yet."
                 event)))
           (erase-buffer)
           
-          (when-let ((logo (alist-get 'logo event)))
+          (when-let* ((logo (alist-get 'logo event)))
             (ctftime--insert-logo-async logo buffer))
           
           (setq ctftime--details-url
@@ -976,7 +1032,6 @@ Return nil when no cache is available yet."
           (when (and (stringp description)
                      (not (string-empty-p
                            description)))
-
             (insert
              "\n"
              (propertize
@@ -991,9 +1046,32 @@ Return nil when no cache is available yet."
       
       (pop-to-buffer buffer))))
 
-(defun ctftime-refresh ()
-  "Clear the cache and asynchronously refresh the current CTFtime buffer."
+(defun ctftime-reset ()
+  "Force-reset the CTFtime API request state.
+
+Abort the current request, if any, and allow a new request to start
+without restarting Emacs."
   (interactive)
+
+  (let ((buffer ctftime--request-buffer))
+    (ctftime--request-cleanup)
+
+    (when (buffer-live-p buffer)
+      (when-let* ((process (get-buffer-process buffer)))
+        (delete-process process))
+      (kill-buffer buffer)))
+  (setq ctftime--request-buffers nil)
+
+  (message "CTFtime: request state reset"))
+
+(defun ctftime-refresh ()
+  "Clear the cache and asynchronously refresh the current CTFtime buffer.
+
+If a request is already running, abort it first and start a new one."
+  (interactive)
+  
+  (when ctftime--request-in-progress
+    (ctftime-reset))
 
   (setq ctftime--cache nil
         ctftime--cache-time nil)
@@ -1001,7 +1079,6 @@ Return nil when no cache is available yet."
                 ctftime--request-buffers)
     (push (current-buffer)
           ctftime--request-buffers))
-
   (let ((inhibit-read-only t))
     (erase-buffer)
     (insert
@@ -1010,17 +1087,18 @@ Return nil when no cache is available yet."
       'face 'font-lock-comment-face)
      "\n"))
 
-  (ctftime--request-async))
+  (unless (ctftime--request-async)
+    (message
+     "CTFtime: unable to start refresh")))
 
 (defun ctftime-set-days ()
   "Change the number of days to retrieve."
   (interactive)
-
+  
   (setq ctftime-days
         (read-number
          "Days ahead: "
          ctftime-days))
-
   (ctftime-refresh))
 
 (defun ctftime--render (&optional silent)
@@ -1030,57 +1108,35 @@ Use cached data immediately and refresh stale data asynchronously."
         (cache-available (and ctftime--cache
                               (not (null ctftime--cache))))
         (cache-valid (ctftime--cache-valid-p)))
-    (unless cache-available
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert
-         (propertize
-          "Loading CTFtime events..."
-          'face 'font-lock-comment-face)
-         "\n"))
-      (unless (memq (current-buffer)
-                    ctftime--request-buffers)
-        (push (current-buffer)
-              ctftime--request-buffers))
-
-      (ctftime--request-async))
-    (when cache-available
-      (let ((events
-             (ctftime--filtered-events)))
-        (setq ctftime--events events)
-
-        (setq ctftime--selected-events
-              (cl-remove-if-not
-               (lambda (id)
-                 (cl-find-if
-                  (lambda (event)
-                    (equal id
-                           (alist-get 'id event)))
-                  ctftime--events))
-               ctftime--selected-events))
-
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-
-          (setq tabulated-list-entries
-                (mapcar #'ctftime--entry
-                        events))
-
-          (tabulated-list-print t)
-          (when current-id
-            (goto-char (point-min))
-
-            (catch 'found
-              (while (not (eobp))
-                (when (equal
-                       current-id
-                       (tabulated-list-get-id))
-                  (throw 'found t))
-                (forward-line 1))))))
-
-      (unless cache-valid
-        (ctftime--request-async)))
-
+    (let ((inhibit-read-only t))
+      (if cache-available
+          (let ((events (ctftime--filtered-events)))
+            (setq ctftime--events events)
+            (setq ctftime--selected-events
+                  (cl-intersection
+                   ctftime--selected-events
+                   (mapcar (lambda (event) (alist-get 'id event)) ctftime--events)
+                   :test #'equal)) 
+            (erase-buffer)
+            (setq tabulated-list-entries (mapcar #'ctftime--entry events))
+            (tabulated-list-print t)
+            (when current-id
+              (goto-char (point-min))
+              (catch 'found
+                (while (not (eobp))
+                  (when (equal current-id (tabulated-list-get-id))
+                    (throw 'found t))
+                  (forward-line 1))))
+            (unless cache-valid (ctftime--request-async)))
+      
+      (erase-buffer)
+      (insert
+       (propertize "Loading CTFtime events..." 'face 'font-lock-comment-face)
+       "\n")
+      (unless (memq (current-buffer) ctftime--request-buffers)
+        (push (current-buffer) ctftime--request-buffers))
+      (ctftime--request-async)))
+    
     (unless silent
       (cond
        ((not cache-available)
