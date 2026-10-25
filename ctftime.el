@@ -1210,6 +1210,7 @@ Use cached data immediately and refresh stale data asynchronously."
 
   (tabulated-list-init-header))
 
+;;;###autoload
 (defun ctftime ()
   "Open the CTFtime dashboard."
   (interactive)
